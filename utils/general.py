@@ -201,7 +201,7 @@ def make_masked_coordinate_tensor(mask, dims=(28, 28, 28)):
     coordinate_tensor = torch.meshgrid(*coordinate_tensor)
     coordinate_tensor = torch.stack(coordinate_tensor, dim=3)
     coordinate_tensor = coordinate_tensor.view([np.prod(dims), 3])
-    coordinate_tensor = coordinate_tensor[mask.flatten() > 0, :]
+    # coordinate_tensor = coordinate_tensor[mask.flatten() > 0, :]
 
     coordinate_tensor = coordinate_tensor.cuda()
 

@@ -20,7 +20,7 @@ class ImplicitRegistrator:
 
         # Use standard coordinate tensor if none is given
         if coordinate_tensor is None:
-            coordinate_tensor = self.make_coordinate_slice(
+            coordinate_tensor = general.make_coordinate_slice(
                 output_shape, dimension, slice_pos
             )
 

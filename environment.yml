@@ -6,7 +6,11 @@ channels:
 
 dependencies: 
   - jupyter
+  - ipykernel
   - pylint
   - autopep8
   - pytest
   - pytest-cov
+  - pip:
+    - -r requirements.txt
+
