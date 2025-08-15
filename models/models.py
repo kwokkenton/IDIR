@@ -1,13 +1,14 @@
+import os
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import os
 import tqdm
 
-from utils import general
-from networks import networks
-from objectives import ncc
-from objectives import regularizers
+from IDIR.networks import networks
+from IDIR.objectives import ncc, regularizers
+from IDIR.utils import general
 
 
 class ImplicitRegistrator:
@@ -53,7 +54,10 @@ class ImplicitRegistrator:
             if "log_interval" in kwargs
             else self.args["log_interval"]
         )
-        self.gpu = kwargs["gpu"] if "gpu" in kwargs else self.args["gpu"]
+        # self.gpu = kwargs["gpu"] if "gpu" in kwargs else self.args["gpu"]
+
+        self.device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+
         self.lr = kwargs["lr"] if "lr" in kwargs else self.args["lr"]
         self.momentum = (
             kwargs["momentum"] if "momentum" in kwargs else self.args["momentum"]
@@ -118,10 +122,12 @@ class ImplicitRegistrator:
                         general.count_parameters(self.network)
                     )
                 )
+                print(self.network)
         else:
             self.network = torch.load(self.network_from_file)
-            if self.gpu:
-                self.network.cuda()
+            self.network.to(self.device)
+            # if self.gpu:
+            #     self.network.cuda()
 
         # Choose the optimizer
         if self.optimizer_arg.lower() == "sgd":
@@ -170,8 +176,9 @@ class ImplicitRegistrator:
             )
 
         # Move variables to GPU
-        if self.gpu:
-            self.network.cuda()
+        self.network.to(self.device)
+        # if self.gpu:
+        #     self.network.cuda()
 
         # Parse arguments from kwargs
         self.mask = kwargs["mask"] if "mask" in kwargs else self.args["mask"]
@@ -227,13 +234,19 @@ class ImplicitRegistrator:
         self.moving_image = moving_image
         self.fixed_image = fixed_image
 
-        self.possible_coordinate_tensor = general.make_masked_coordinate_tensor(
-            self.mask, self.fixed_image.shape
-        )
+        # self.possible_coordinate_tensor = general.make_masked_coordinate_tensor(
+        #     self.mask, self.fixed_image.shape
+        # )
+        self.possible_coordinate_tensor = general.make_coordinate_tensor()
 
-        if self.gpu:
-            self.moving_image = self.moving_image.cuda()
-            self.fixed_image = self.fixed_image.cuda()
+        self.moving_image = self.moving_image.to(self.device)
+        self.fixed_image = self.fixed_image.to(self.device)
+        self.possible_coordinate_tensor = self.possible_coordinate_tensor.to(self.device)
+
+        # if self.gpu:
+        #     self.moving_image = self.moving_image.cuda()
+        #     self.fixed_image = self.fixed_image.cuda()
+        
 
     def cuda(self):
         """Move the model to the GPU."""
@@ -306,8 +319,15 @@ class ImplicitRegistrator:
 
         loss = 0
         indices = torch.randperm(
-            self.possible_coordinate_tensor.shape[0], device="cuda"
+            self.possible_coordinate_tensor.shape[0], 
+            device = self.device
         )[: self.batch_size]
+        # indices = torch.randperm(
+        #     self.possible_coordinate_tensor.shape[0], device="cuda"
+        # )[: self.batch_size]
+        # indices = indices.to(self.device)
+        # self.possible_coordinate_tensor = self.possible_coordinate_tensor.to(torch.mps)
+
         coordinate_tensor = self.possible_coordinate_tensor[indices, :]
         coordinate_tensor = coordinate_tensor.requires_grad_(True)
 
@@ -412,3 +432,19 @@ class ImplicitRegistrator:
         # Perform training iterations
         for i in tqdm.tqdm(range(epochs)):
             self.training_iteration(i)
+    
+    def make_coordinate_slice(self, dims=(28, 28), dimension=0, slice_pos=0, gpu=True):
+        """Make a coordinate tensor."""
+
+        dims = list(dims)
+        dims.insert(dimension, 1)
+
+        coordinate_tensor = [torch.linspace(-1, 1, dims[i]) for i in range(3)]
+        coordinate_tensor[dimension] = torch.linspace(slice_pos, slice_pos, 1)
+        coordinate_tensor = torch.meshgrid(*coordinate_tensor)
+        coordinate_tensor = torch.stack(coordinate_tensor, dim=3)
+        coordinate_tensor = coordinate_tensor.view([np.prod(dims), 3])
+
+        coordinate_tensor = coordinate_tensor.to(self.device)
+
+        return coordinate_tensor
