@@ -1,8 +1,8 @@
-from utils import general
 from models import models
+from utils import general
 
-data_dir = "D:\Data\DIRLAB\DIRLAB_clean"
-out_dir = "D:\Data\DIRLAB\outtest"
+data_dir = "/Users/kenton/data/DIRLAB"
+out_dir = "/Users/kenton/data/DIRLAB/out"
 
 case_id = 8
 

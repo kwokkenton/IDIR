@@ -17,12 +17,25 @@ class ImplicitRegistrator:
     def __call__(
         self, coordinate_tensor=None, output_shape=(28, 28), dimension=0, slice_pos=0
     ):
-        """Return the image-values for the given input-coordinates."""
+        """ Query the trained Implicit Neural Network.
+            Returns the image-values for the given input-coordinates.
+            Supports 2D
+
+        Args:
+            coordinate_tensor (torch.tensor, optional): coordinates to evaluate
+                the neural network at. Defaults to None.
+            output_shape (tuple, optional): _description_. Defaults to (28, 28).
+            dimension (int, optional): _description_. Defaults to 0.
+            slice_pos (int, optional): _description_. Defaults to 0.
+
+        Returns:
+            transformed_image (np.ndarray): _description_
+        """
 
         # Use standard coordinate tensor if none is given
         if coordinate_tensor is None:
-            coordinate_tensor = self.make_coordinate_slice(
-                output_shape, dimension, slice_pos
+            coordinate_tensor = general.make_coordinate_slice(
+                output_shape, dimension, slice_pos, device=self.device
             )
 
         output = self.network(coordinate_tensor)
@@ -126,8 +139,7 @@ class ImplicitRegistrator:
         else:
             self.network = torch.load(self.network_from_file)
             self.network.to(self.device)
-            # if self.gpu:
-            #     self.network.cuda()
+
 
         # Choose the optimizer
         if self.optimizer_arg.lower() == "sgd":
@@ -152,83 +164,37 @@ class ImplicitRegistrator:
             )
 
         # Choose the loss function
-        if self.loss_function_arg.lower() == "mse":
-            self.criterion = nn.MSELoss()
+        loss_functions = {
+            "mse": nn.MSELoss(),
+            "l1": nn.L1Loss(),
+            "ncc": ncc.NCC(),
+            "smoothl1": nn.SmoothL1Loss(beta=0.2),
+            "huber": nn.HuberLoss(),
+        }
 
-        elif self.loss_function_arg.lower() == "l1":
-            self.criterion = nn.L1Loss()
+        loss_key = self.loss_function_arg.lower()
+        self.criterion = loss_functions.get(loss_key, nn.MSELoss())
 
-        elif self.loss_function_arg.lower() == "ncc":
-            self.criterion = ncc.NCC()
-
-        elif self.loss_function_arg.lower() == "smoothl1":
-            self.criterion = nn.SmoothL1Loss(beta=0.2)
-
-        elif self.loss_function_arg.lower() == "huber":
-            self.criterion = nn.HuberLoss()
-
-        else:
-            self.criterion = nn.MSELoss()
-            print(
-                "WARNING: "
-                + str(self.loss_function_arg)
-                + " not recognized as loss function, picked MSE instead"
-            )
+        if loss_key not in loss_functions:
+            print(f"WARNING: {self.loss_function_arg} not recognized as loss function, picked MSE instead")
 
         # Move variables to GPU
         self.network.to(self.device)
-        # if self.gpu:
-        #     self.network.cuda()
 
         # Parse arguments from kwargs
         self.mask = kwargs["mask"] if "mask" in kwargs else self.args["mask"]
 
         # Parse regularization kwargs
-        self.jacobian_regularization = (
-            kwargs["jacobian_regularization"]
-            if "jacobian_regularization" in kwargs
-            else self.args["jacobian_regularization"]
-        )
-        self.alpha_jacobian = (
-            kwargs["alpha_jacobian"]
-            if "alpha_jacobian" in kwargs
-            else self.args["alpha_jacobian"]
-        )
-
-        self.hyper_regularization = (
-            kwargs["hyper_regularization"]
-            if "hyper_regularization" in kwargs
-            else self.args["hyper_regularization"]
-        )
-        self.alpha_hyper = (
-            kwargs["alpha_hyper"]
-            if "alpha_hyper" in kwargs
-            else self.args["alpha_hyper"]
-        )
-
-        self.bending_regularization = (
-            kwargs["bending_regularization"]
-            if "bending_regularization" in kwargs
-            else self.args["bending_regularization"]
-        )
-        self.alpha_bending = (
-            kwargs["alpha_bending"]
-            if "alpha_bending" in kwargs
-            else self.args["alpha_bending"]
-        )
-
+        # and other arguments
+        for key in [
+            "jacobian_regularization", "alpha_jacobian",
+            "hyper_regularization", "alpha_hyper",
+            "bending_regularization", "alpha_bending",
+            "image_shape", "batch_size"
+        ]:
+            setattr(self, key, kwargs.get(key, self.args[key]))
         # Set seed
         torch.manual_seed(self.args["seed"])
-
-        # Parse arguments from kwargs
-        self.image_shape = (
-            kwargs["image_shape"]
-            if "image_shape" in kwargs
-            else self.args["image_shape"]
-        )
-        self.batch_size = (
-            kwargs["batch_size"] if "batch_size" in kwargs else self.args["batch_size"]
-        )
 
         # Initialization
         self.moving_image = moving_image
@@ -243,73 +209,55 @@ class ImplicitRegistrator:
         self.fixed_image = self.fixed_image.to(self.device)
         self.possible_coordinate_tensor = self.possible_coordinate_tensor.to(self.device)
 
-        # if self.gpu:
-        #     self.moving_image = self.moving_image.cuda()
-        #     self.fixed_image = self.fixed_image.cuda()
-        
-
-    def cuda(self):
-        """Move the model to the GPU."""
-
-        # Standard variables
-        self.network.cuda()
-
-        # Variables specific to this class
-        self.moving_image.cuda()
-        self.fixed_image.cuda()
-
     def set_default_arguments(self):
         """Set default arguments."""
 
         # Inherit default arguments from standard learning model
-        self.args = {}
 
-        # Define the value of arguments
-        self.args["mask"] = None
-        self.args["mask_2"] = None
+        self.args = {
+            "mask": None,
+            "mask_2": None,
+            "method": 1,
+            "lr": 1e-5,
+            "batch_size": 10000,
+            "layers": [3, 256, 256, 256, 3],
+            "velocity_steps": 1,
 
-        self.args["method"] = 1
+            "output_regularization": False,
+            "alpha_output": 0.2,
+            "reg_norm_output": 1,
 
-        self.args["lr"] = 0.00001
-        self.args["batch_size"] = 10000
-        self.args["layers"] = [3, 256, 256, 256, 3]
-        self.args["velocity_steps"] = 1
+            "jacobian_regularization": False,
+            "alpha_jacobian": 0.05,
 
-        # Define argument defaults specific to this class
-        self.args["output_regularization"] = False
-        self.args["alpha_output"] = 0.2
-        self.args["reg_norm_output"] = 1
+            "hyper_regularization": False,
+            "alpha_hyper": 0.25,
 
-        self.args["jacobian_regularization"] = False
-        self.args["alpha_jacobian"] = 0.05
+            "bending_regularization": False,
+            "alpha_bending": 10.0,
 
-        self.args["hyper_regularization"] = False
-        self.args["alpha_hyper"] = 0.25
+            "image_shape": (200, 200),
+            "network": None,
 
-        self.args["bending_regularization"] = False
-        self.args["alpha_bending"] = 10.0
+            "epochs": 2500,
+            "log_interval": 2500 // 4,   # auto-calculated
+            "verbose": True,
+            "save_folder": "output",
 
-        self.args["image_shape"] = (200, 200)
+            "network_type": "MLP",
+            # "gpu": torch.cuda.is_available(),
+            "optimizer": "Adam",
+            "loss_function": "ncc",
+            "momentum": 0.5,
 
-        self.args["network"] = None
+            "positional_encoding": False,
+            "weight_init": True,
+            "omega": 32,
+            "seed": 1,
+        }
 
-        self.args["epochs"] = 2500
         self.args["log_interval"] = self.args["epochs"] // 4
-        self.args["verbose"] = True
-        self.args["save_folder"] = "output"
 
-        self.args["network_type"] = "MLP"
-
-        self.args["gpu"] = torch.cuda.is_available()
-        self.args["optimizer"] = "Adam"
-        self.args["loss_function"] = "ncc"
-        self.args["momentum"] = 0.5
-
-        self.args["positional_encoding"] = False
-        self.args["weight_init"] = True
-        self.args["omega"] = 32
-
-        self.args["seed"] = 1
 
     def training_iteration(self, epoch):
         """Perform one iteration of training."""
@@ -433,18 +381,5 @@ class ImplicitRegistrator:
         for i in tqdm.tqdm(range(epochs)):
             self.training_iteration(i)
     
-    def make_coordinate_slice(self, dims=(28, 28), dimension=0, slice_pos=0, gpu=True):
-        """Make a coordinate tensor."""
+# 
 
-        dims = list(dims)
-        dims.insert(dimension, 1)
-
-        coordinate_tensor = [torch.linspace(-1, 1, dims[i]) for i in range(3)]
-        coordinate_tensor[dimension] = torch.linspace(slice_pos, slice_pos, 1)
-        coordinate_tensor = torch.meshgrid(*coordinate_tensor)
-        coordinate_tensor = torch.stack(coordinate_tensor, dim=3)
-        coordinate_tensor = coordinate_tensor.view([np.prod(dims), 3])
-
-        coordinate_tensor = coordinate_tensor.to(self.device)
-
-        return coordinate_tensor
