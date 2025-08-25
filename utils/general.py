@@ -6,6 +6,7 @@ import torch
 
 
 def compute_landmark_accuracy(landmarks_pred, landmarks_gt, voxel_size):
+    # [Z,Y,X]
     landmarks_pred = np.round(landmarks_pred)
     landmarks_gt = np.round(landmarks_gt)
 
@@ -28,7 +29,7 @@ def compute_landmark_accuracy(landmarks_pred, landmarks_gt, voxel_size):
 
     means = means[::-1]
     stds = stds[::-1]
-
+    # [Total, X, Y, Z]
     return means, stds
 
 
@@ -193,17 +194,30 @@ def make_coordinate_slice(dims=(28, 28), slice_dimension=0, slice_pos=0, device 
     return coordinate_tensor
 
 
-def make_coordinate_tensor(dims=(28, 28, 28), device='cpu'):
-    """Make a coordinate tensor.
+def make_coordinate_tensor(dims=(28, 28, 28), mask=None, device='cpu'):
+    """Make a coordinate tensor, uniformly sampled in the neural network's 
+        coordinates [-1,1] with dim steps for each tensor dimension.
     
-    """
+    Args:
+        dims (tuple, optional): _description_. Defaults to (28, 28, 28).
+        mask (_type_, optional): mask has same shape as dims. Defaults to None.
+        device (str, optional): _description_. Defaults to 'cpu'.
 
+    Returns:
+        coordinate_tensor (torch.tensor): flattened coordinate tensor
+            shape N_points x N_dim.
+    """
+    if mask is not None:
+        assert mask.shape == dims
+    # dims[i] set
     coordinate_tensor = [torch.linspace(-1, 1, dims[i]) for i in range(3)]
     coordinate_tensor = torch.meshgrid(*coordinate_tensor)
     coordinate_tensor = torch.stack(coordinate_tensor, dim=3)
     coordinate_tensor = coordinate_tensor.view([np.prod(dims), 3])
 
-    # coordinate_tensor = coordinate_tensor.cuda()
+    if mask is not None:
+        coordinate_tensor = coordinate_tensor[mask.flatten() > 0, :]
+
     coordinate_tensor = coordinate_tensor.to(device)
 
     return coordinate_tensor
