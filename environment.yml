@@ -4,7 +4,7 @@ channels:
   - defaults
   - conda-forge
 
-dependencies: 
+dependencies:
   - jupyter
   - ipykernel
   - pylint

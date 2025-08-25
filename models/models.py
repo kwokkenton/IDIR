@@ -1,27 +1,89 @@
+"""
+Wolterink, Jelmer M., Jesse C. Zwienenberg, and Christoph Brune. 
+‘Implicit Neural Representations for Deformable Image Registration’. 
+Proceedings of The 5th International Conference on Medical 
+Imaging with Deep Learning, PMLR, 4 December 2022, 1349–59. 
+https://proceedings.mlr.press/v172/wolterink22a.html.
+
+"""
+import os
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import os
 import tqdm
 
-from utils import general
-from networks import networks
-from objectives import ncc
-from objectives import regularizers
+from IDIR.networks import networks
+from IDIR.objectives import ncc, regularizers
+from IDIR.utils import general
 
+DEFAULT_ARGS = {
+            "mask": None,
+            "mask_2": None,
+            # "method": 1,
+            "lr": 1e-4, # Paper default: 1e-4
+            "batch_size": 10000,
+            "layers": [3, 256, 256, 256, 3],
+            "velocity_steps": 1,
+
+            "output_regularization": False,
+            "alpha_output": 0.2,
+            "reg_norm_output": 1,
+
+            "jacobian_regularization": False,
+            "alpha_jacobian": 0.05,
+
+            "hyper_regularization": False,
+            "alpha_hyper": 0.25,
+
+            "bending_regularization": False,
+            "alpha_bending": 10.0,
+
+            "image_shape": (200, 200),
+            "network": None,
+
+            "epochs": 2500, # Paper default: 2500
+            "log_interval": 2500 // 4,   # auto-calculated
+            "verbose": True,
+            "save_folder": "output",
+
+            "network_type": "MLP",
+            "optimizer": "Adam", # Paper default: Adam
+            "loss_function": "ncc",
+            "momentum": 0.5,
+
+            "positional_encoding": False,
+            "weight_init": True,
+            "omega": 32,
+            "seed": 1,
+        }
 
 class ImplicitRegistrator:
-    """This is a class for registrating implicitly represented images."""
+    """This is a class for registering implicitly represented images."""
 
     def __call__(
         self, coordinate_tensor=None, output_shape=(28, 28), dimension=0, slice_pos=0
     ):
-        """Return the image-values for the given input-coordinates."""
+        """ Queries a slice of the trained Implicit Neural Network.
+            Returns the image-values for the given input-coordinates.
+            Supports 2D
+
+        Args:
+            coordinate_tensor (torch.tensor, optional): coordinates to evaluate
+                the neural network at. Defaults to None.
+            output_shape (tuple, optional): output shape of image. Defaults to (28, 28).
+            dimension (int, optional): _description_. Defaults to 0.
+            slice_pos (int, optional): _description_. Defaults to 0.
+
+        Returns:
+            transformed_image (np.ndarray): _description_
+        """
 
         # Use standard coordinate tensor if none is given
         if coordinate_tensor is None:
             coordinate_tensor = general.make_coordinate_slice(
-                output_shape, dimension, slice_pos
+                output_shape, dimension, slice_pos, device=self.device
             )
 
         output = self.network(coordinate_tensor)
@@ -41,48 +103,29 @@ class ImplicitRegistrator:
         """Initialize the learning model."""
 
         # Set all default arguments in a dict: self.args
-        self.set_default_arguments()
-
+        self.args = self.make_default_arguments()
         # Check if all kwargs keys are valid (this checks for typos)
         assert all(kwarg in self.args.keys() for kwarg in kwargs)
 
         # Parse important argument from kwargs
-        self.epochs = kwargs["epochs"] if "epochs" in kwargs else self.args["epochs"]
-        self.log_interval = (
-            kwargs["log_interval"]
-            if "log_interval" in kwargs
-            else self.args["log_interval"]
-        )
-        self.gpu = kwargs["gpu"] if "gpu" in kwargs else self.args["gpu"]
-        self.lr = kwargs["lr"] if "lr" in kwargs else self.args["lr"]
-        self.momentum = (
-            kwargs["momentum"] if "momentum" in kwargs else self.args["momentum"]
-        )
-        self.optimizer_arg = (
-            kwargs["optimizer"] if "optimizer" in kwargs else self.args["optimizer"]
-        )
-        self.loss_function_arg = (
-            kwargs["loss_function"]
-            if "loss_function" in kwargs
-            else self.args["loss_function"]
-        )
-        self.layers = kwargs["layers"] if "layers" in kwargs else self.args["layers"]
-        self.weight_init = (
-            kwargs["weight_init"]
-            if "weight_init" in kwargs
-            else self.args["weight_init"]
-        )
-        self.omega = kwargs["omega"] if "omega" in kwargs else self.args["omega"]
-        self.save_folder = (
-            kwargs["save_folder"]
-            if "save_folder" in kwargs
-            else self.args["save_folder"]
-        )
-
-        # Parse other arguments from kwargs
-        self.verbose = (
-            kwargs["verbose"] if "verbose" in kwargs else self.args["verbose"]
-        )
+        self.device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+        
+        for key in ["epochs", "log_interval", "lr", "momentum", "optimizer",
+            "loss_function", "layers", "weight_init",
+            "omega", "save_folder", "verbose", 
+            "network_type",
+            # Mask,
+            "mask",
+            # Regularisation
+            "jacobian_regularization", 
+            "alpha_jacobian",
+            "hyper_regularization", "alpha_hyper",
+            "bending_regularization", "alpha_bending",
+            "image_shape", "batch_size"
+        ]:
+            setattr(self, key if key != "optimizer" and key != "loss_function" 
+                        else key + "_arg", 
+                    kwargs.get(key, self.args[key]))
 
         # Make folder for output
         if not self.save_folder == "" and not os.path.isdir(self.save_folder):
@@ -102,202 +145,103 @@ class ImplicitRegistrator:
         self.network_from_file = (
             kwargs["network"] if "network" in kwargs else self.args["network"]
         )
-        self.network_type = (
-            kwargs["network_type"]
-            if "network_type" in kwargs
-            else self.args["network_type"]
-        )
-        if self.network_from_file is None:
-            if self.network_type == "MLP":
-                self.network = networks.MLP(self.layers)
-            else:
-                self.network = networks.Siren(self.layers, self.weight_init, self.omega)
-            if self.verbose:
-                print(
-                    "Network contains {} trainable parameters.".format(
-                        general.count_parameters(self.network)
-                    )
-                )
-        else:
-            self.network = torch.load(self.network_from_file)
-            if self.gpu:
-                self.network.cuda()
+        self.network =  self.make_network(self.network_from_file)
 
         # Choose the optimizer
-        if self.optimizer_arg.lower() == "sgd":
-            self.optimizer = optim.SGD(
-                self.network.parameters(), lr=self.lr, momentum=self.momentum
-            )
-
-        elif self.optimizer_arg.lower() == "adam":
-            self.optimizer = optim.Adam(self.network.parameters(), lr=self.lr)
-
-        elif self.optimizer_arg.lower() == "adadelta":
-            self.optimizer = optim.Adadelta(self.network.parameters(), lr=self.lr)
-
-        else:
-            self.optimizer = optim.SGD(
-                self.network.parameters(), lr=self.lr, momentum=self.momentum
-            )
-            print(
-                "WARNING: "
-                + str(self.optimizer_arg)
-                + " not recognized as optimizer, picked SGD instead"
-            )
+        self.optimizer = self.make_optimizer(self.optimizer_arg.lower(), 
+                            self.network.parameters(), 
+                            lr=self.lr, 
+                            momentum=self.momentum)
 
         # Choose the loss function
-        if self.loss_function_arg.lower() == "mse":
-            self.criterion = nn.MSELoss()
-
-        elif self.loss_function_arg.lower() == "l1":
-            self.criterion = nn.L1Loss()
-
-        elif self.loss_function_arg.lower() == "ncc":
-            self.criterion = ncc.NCC()
-
-        elif self.loss_function_arg.lower() == "smoothl1":
-            self.criterion = nn.SmoothL1Loss(beta=0.2)
-
-        elif self.loss_function_arg.lower() == "huber":
-            self.criterion = nn.HuberLoss()
-
-        else:
-            self.criterion = nn.MSELoss()
-            print(
-                "WARNING: "
-                + str(self.loss_function_arg)
-                + " not recognized as loss function, picked MSE instead"
-            )
-
-        # Move variables to GPU
-        if self.gpu:
-            self.network.cuda()
-
-        # Parse arguments from kwargs
-        self.mask = kwargs["mask"] if "mask" in kwargs else self.args["mask"]
-
-        # Parse regularization kwargs
-        self.jacobian_regularization = (
-            kwargs["jacobian_regularization"]
-            if "jacobian_regularization" in kwargs
-            else self.args["jacobian_regularization"]
-        )
-        self.alpha_jacobian = (
-            kwargs["alpha_jacobian"]
-            if "alpha_jacobian" in kwargs
-            else self.args["alpha_jacobian"]
-        )
-
-        self.hyper_regularization = (
-            kwargs["hyper_regularization"]
-            if "hyper_regularization" in kwargs
-            else self.args["hyper_regularization"]
-        )
-        self.alpha_hyper = (
-            kwargs["alpha_hyper"]
-            if "alpha_hyper" in kwargs
-            else self.args["alpha_hyper"]
-        )
-
-        self.bending_regularization = (
-            kwargs["bending_regularization"]
-            if "bending_regularization" in kwargs
-            else self.args["bending_regularization"]
-        )
-        self.alpha_bending = (
-            kwargs["alpha_bending"]
-            if "alpha_bending" in kwargs
-            else self.args["alpha_bending"]
-        )
-
-        # Set seed
-        torch.manual_seed(self.args["seed"])
-
-        # Parse arguments from kwargs
-        self.image_shape = (
-            kwargs["image_shape"]
-            if "image_shape" in kwargs
-            else self.args["image_shape"]
-        )
-        self.batch_size = (
-            kwargs["batch_size"] if "batch_size" in kwargs else self.args["batch_size"]
-        )
+        self.criterion = self.make_loss(self.loss_function_arg.lower())
 
         # Initialization
         self.moving_image = moving_image
         self.fixed_image = fixed_image
 
-        self.possible_coordinate_tensor = general.make_masked_coordinate_tensor(
-            self.mask, self.fixed_image.shape
-        )
+        # Set seed
+        torch.manual_seed(self.args["seed"])
 
-        if self.gpu:
-            self.moving_image = self.moving_image.cuda()
-            self.fixed_image = self.fixed_image.cuda()
+        self.possible_coordinate_tensor = general.make_coordinate_tensor(self.fixed_image.shape, 
+                                                                         mask=self.mask, 
+                                                                         device=self.device)
+        # Move variables to GPU
+        self.network.to(self.device)
+        self.moving_image = self.moving_image.to(self.device)
+        self.fixed_image = self.fixed_image.to(self.device)
+        self.possible_coordinate_tensor = self.possible_coordinate_tensor.to(self.device)
 
-    def cuda(self):
-        """Move the model to the GPU."""
+        if self.verbose:
+            print('Image shape: ', self.fixed_image.shape)
+            print('Coordinate tensor shape: ', self.possible_coordinate_tensor.shape)
+            print('Batch size: ', self.batch_size)
 
-        # Standard variables
-        self.network.cuda()
 
-        # Variables specific to this class
-        self.moving_image.cuda()
-        self.fixed_image.cuda()
+    # Factory functions
+    def make_network(self, network_from_file):
+        if network_from_file is None:
+            if self.network_type == "MLP":
+                network = networks.MLP(self.layers)
+            else:
+                network = networks.Siren(self.layers, self.weight_init, self.omega)
+  
+        else:
+            self.network = torch.load(network_from_file)
 
-    def set_default_arguments(self):
+        if self.verbose:
+            print(
+                "Network contains {} trainable parameters.".format(
+                    general.count_parameters(network)
+                )
+            )
+            print(network)
+        return network
+    
+    def make_optimizer(self, optimizer_arg, network_params, lr, momentum):    
+        if optimizer_arg == "sgd":
+            optimizer = optim.SGD(
+                network_params, lr=lr, momentum=momentum
+            )
+        elif optimizer_arg == "adam":
+            optimizer = optim.Adam(network_params, lr=lr)
+        elif optimizer_arg == "adadelta":
+            optimizer = optim.Adadelta(network_params, lr=lr)
+        else:
+            optimizer = optim.SGD(
+                network_params, lr=lr, momentum=momentum
+            )
+            print(
+                "WARNING: "
+                + str(optimizer_arg)
+                + " not recognized as optimizer, picked SGD instead"
+            )
+        return optimizer
+    
+    def make_loss(self, loss_key):
+        loss_functions = {
+            "mse": nn.MSELoss(),
+            "l1": nn.L1Loss(),
+            "ncc": ncc.NCC(),
+            "smoothl1": nn.SmoothL1Loss(beta=0.2),
+            "huber": nn.HuberLoss(),
+        }
+
+        criterion = loss_functions.get(loss_key, nn.MSELoss())
+
+        if loss_key not in loss_functions:
+            print(f"WARNING: {self.loss_function_arg} not recognized as loss function, picked MSE instead")
+
+        return criterion
+    
+    def make_default_arguments(self):
         """Set default arguments."""
-
         # Inherit default arguments from standard learning model
-        self.args = {}
-
-        # Define the value of arguments
-        self.args["mask"] = None
-        self.args["mask_2"] = None
-
-        self.args["method"] = 1
-
-        self.args["lr"] = 0.00001
-        self.args["batch_size"] = 10000
-        self.args["layers"] = [3, 256, 256, 256, 3]
-        self.args["velocity_steps"] = 1
-
-        # Define argument defaults specific to this class
-        self.args["output_regularization"] = False
-        self.args["alpha_output"] = 0.2
-        self.args["reg_norm_output"] = 1
-
-        self.args["jacobian_regularization"] = False
-        self.args["alpha_jacobian"] = 0.05
-
-        self.args["hyper_regularization"] = False
-        self.args["alpha_hyper"] = 0.25
-
-        self.args["bending_regularization"] = False
-        self.args["alpha_bending"] = 10.0
-
-        self.args["image_shape"] = (200, 200)
-
-        self.args["network"] = None
-
-        self.args["epochs"] = 2500
-        self.args["log_interval"] = self.args["epochs"] // 4
-        self.args["verbose"] = True
-        self.args["save_folder"] = "output"
-
-        self.args["network_type"] = "MLP"
-
-        self.args["gpu"] = torch.cuda.is_available()
-        self.args["optimizer"] = "Adam"
-        self.args["loss_function"] = "ncc"
-        self.args["momentum"] = 0.5
-
-        self.args["positional_encoding"] = False
-        self.args["weight_init"] = True
-        self.args["omega"] = 32
-
-        self.args["seed"] = 1
-
+        args = DEFAULT_ARGS
+        args["log_interval"] = args["epochs"] // 4
+        return args
+    
+    # Training code
     def training_iteration(self, epoch):
         """Perform one iteration of training."""
 
@@ -305,17 +249,26 @@ class ImplicitRegistrator:
         self.network.train()
 
         loss = 0
+
+        # Sample batch_size coordinates from the large coordinate tensor
         indices = torch.randperm(
-            self.possible_coordinate_tensor.shape[0], device="cuda"
+            self.possible_coordinate_tensor.shape[0], 
+            device = self.device
         )[: self.batch_size]
-        coordinate_tensor = self.possible_coordinate_tensor[indices, :]
+
+        coordinate_tensor = self.possible_coordinate_tensor[indices, :] # [B,3]
         coordinate_tensor = coordinate_tensor.requires_grad_(True)
 
+        # Get actual coordinates by addition as Network gives displacements u(x) 
+        # from F(x) -> M(x) 
         output = self.network(coordinate_tensor)
         coord_temp = torch.add(output, coordinate_tensor)
         output = coord_temp
 
+        # Perform registration via sampling moving image M in mapped 
+        # coordinates Phi i.e. M(Phi(x))
         transformed_image = self.transform_no_add(coord_temp)
+        # Sample fixed image at the same coordinates
         fixed_image = general.fast_trilinear_interpolation(
             self.fixed_image,
             coordinate_tensor[:, 0],
@@ -380,7 +333,7 @@ class ImplicitRegistrator:
             transformation[:, 2],
         )
 
-    def transform_no_add(self, transformation, moving_image=None, reshape=False):
+    def transform_no_add(self, transformation, moving_image=None):
         """Transform moving image given a transformation."""
 
         # If no moving image is given use the standard one
@@ -394,7 +347,7 @@ class ImplicitRegistrator:
             transformation[:, 2],
         )
 
-    def fit(self, epochs=None, red_blue=False):
+    def fit(self, epochs=None):
         """Train the network."""
 
         # Determine epochs

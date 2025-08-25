@@ -2,7 +2,6 @@ import torch
 from torch import Tensor
 from torch.nn.modules.loss import _Loss
 
-
 ### Normalized cross-correlation, implementation from the excellent GitHub repository by Bob de Vos (AmsterdamUMC):
 ### https://github.com/BDdeVos/TorchIR
 

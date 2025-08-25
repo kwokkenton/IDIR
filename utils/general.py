@@ -1,10 +1,12 @@
-import numpy as np
 import os
-import torch
+
+import numpy as np
 import SimpleITK as sitk
+import torch
 
 
 def compute_landmark_accuracy(landmarks_pred, landmarks_gt, voxel_size):
+    # [Z,Y,X]
     landmarks_pred = np.round(landmarks_pred)
     landmarks_gt = np.round(landmarks_gt)
 
@@ -27,16 +29,16 @@ def compute_landmark_accuracy(landmarks_pred, landmarks_gt, voxel_size):
 
     means = means[::-1]
     stds = stds[::-1]
-
+    # [Total, X, Y, Z]
     return means, stds
 
 
-def compute_landmarks(network, landmarks_pre, image_size):
+def compute_landmarks(network, landmarks_pre, image_size, device='cpu'):
     scale_of_axes = [(0.5 * s) for s in image_size]
 
     coordinate_tensor = torch.FloatTensor(landmarks_pre / (scale_of_axes)) - 1.0
 
-    output = network(coordinate_tensor.cuda())
+    output = network(coordinate_tensor.to(device))
 
     delta = output.cpu().detach().numpy() * (scale_of_axes)
 
@@ -81,31 +83,31 @@ def load_image_DIRLab(variation=1, folder=r"D:\Data\DIRLAB\Case"):
     # Images
     dtype = np.dtype(np.int16)
 
-    with open(folder + r"Images\case" + str(variation) + "_T00_s.img", "rb") as f:
+    with open(folder + r"Images/case" + str(variation) + "_T00_s.img", "rb") as f:
         data = np.fromfile(f, dtype)
     image_insp = data.reshape(shape)
 
-    with open(folder + r"Images\case" + str(variation) + "_T50_s.img", "rb") as f:
+    with open(folder + r"Images/case" + str(variation) + "_T50_s.img", "rb") as f:
         data = np.fromfile(f, dtype)
     image_exp = data.reshape(shape)
 
-    imgsitk_in = sitk.ReadImage(folder + r"Masks\case" + str(variation) + "_T00_s.mhd")
+    # imgsitk_in = sitk.ReadImage(folder + r"Masks\case" + str(variation) + "_T00_s.mhd")
 
-    mask = np.clip(sitk.GetArrayFromImage(imgsitk_in), 0, 1)
-
+    # mask = np.clip(sitk.GetArrayFromImage(imgsitk_in), 0, 1)
+    mask = None
     image_insp = torch.FloatTensor(image_insp)
     image_exp = torch.FloatTensor(image_exp)
 
     # Landmarks
     with open(
-        folder + r"ExtremePhases\Case" + str(variation) + "_300_T00_xyz.txt"
+        folder + r"ExtremePhases/Case" + str(variation) + "_300_T00_xyz.txt"
     ) as f:
         landmarks_insp = np.array(
             [list(map(int, line[:-1].split("\t")[:3])) for line in f.readlines()]
         )
 
     with open(
-        folder + r"ExtremePhases\Case" + str(variation) + "_300_T50_xyz.txt"
+        folder + r"ExtremePhases/Case" + str(variation) + "_300_T50_xyz.txt"
     ) as f:
         landmarks_exp = np.array(
             [list(map(int, line[:-1].split("\t")[:3])) for line in f.readlines()]
@@ -164,32 +166,59 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def make_coordinate_slice(dims=(28, 28), dimension=0, slice_pos=0, gpu=True):
-    """Make a coordinate tensor."""
+def make_coordinate_slice(dims=(28, 28), slice_dimension=0, slice_pos=0, device = 'cpu'):
+    """ Make a coordinate slice, uniformly sampled in the neural network's 
+        coordinates [-1,1].
 
+    Args:
+        dims (tuple, optional): _description_. Defaults to (28, 28).
+        slice_dimension (int, optional): _description_. Defaults to 0.
+        slice_pos (int, optional): _description_. Defaults to 0.
+        device (str, optional): _description_. Defaults to 'cpu'.
+
+    Returns:
+        coordinate_tensor (torch.tensor): shape N_points x N_dims
+    """
     dims = list(dims)
-    dims.insert(dimension, 1)
+    dims.insert(slice_dimension, 1)
 
     coordinate_tensor = [torch.linspace(-1, 1, dims[i]) for i in range(3)]
-    coordinate_tensor[dimension] = torch.linspace(slice_pos, slice_pos, 1)
+    coordinate_tensor[slice_dimension] = torch.linspace(slice_pos, slice_pos, 1)
     coordinate_tensor = torch.meshgrid(*coordinate_tensor)
     coordinate_tensor = torch.stack(coordinate_tensor, dim=3)
+    # Turn into (N_points x N_dims), N_dims = 3
     coordinate_tensor = coordinate_tensor.view([np.prod(dims), 3])
 
-    coordinate_tensor = coordinate_tensor.cuda()
+    coordinate_tensor = coordinate_tensor.to(device) 
 
     return coordinate_tensor
 
 
-def make_coordinate_tensor(dims=(28, 28, 28), gpu=True):
-    """Make a coordinate tensor."""
+def make_coordinate_tensor(dims=(28, 28, 28), mask=None, device='cpu'):
+    """Make a coordinate tensor, uniformly sampled in the neural network's 
+        coordinates [-1,1] with dim steps for each tensor dimension.
+    
+    Args:
+        dims (tuple, optional): _description_. Defaults to (28, 28, 28).
+        mask (_type_, optional): mask has same shape as dims. Defaults to None.
+        device (str, optional): _description_. Defaults to 'cpu'.
 
+    Returns:
+        coordinate_tensor (torch.tensor): flattened coordinate tensor
+            shape N_points x N_dim.
+    """
+    if mask is not None:
+        assert mask.shape == dims
+    # dims[i] set
     coordinate_tensor = [torch.linspace(-1, 1, dims[i]) for i in range(3)]
     coordinate_tensor = torch.meshgrid(*coordinate_tensor)
     coordinate_tensor = torch.stack(coordinate_tensor, dim=3)
     coordinate_tensor = coordinate_tensor.view([np.prod(dims), 3])
 
-    coordinate_tensor = coordinate_tensor.cuda()
+    if mask is not None:
+        coordinate_tensor = coordinate_tensor[mask.flatten() > 0, :]
+
+    coordinate_tensor = coordinate_tensor.to(device)
 
     return coordinate_tensor
 
@@ -206,3 +235,7 @@ def make_masked_coordinate_tensor(mask, dims=(28, 28, 28)):
     coordinate_tensor = coordinate_tensor.cuda()
 
     return coordinate_tensor
+
+if __name__ == "__main__":
+    slice = make_coordinate_slice()
+    print(slice)
