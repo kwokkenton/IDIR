@@ -33,13 +33,11 @@ def compute_landmark_accuracy(landmarks_pred, landmarks_gt, voxel_size):
     return means, stds
 
 
-def compute_landmarks(network, landmarks_pre, image_size, device='cpu'):
+def compute_landmarks(network, landmarks_pre:np.ndarray, image_size, device='cpu'):
+    # Returns coordinates in moving frame
     scale_of_axes = [(0.5 * s) for s in image_size]
-
     coordinate_tensor = torch.FloatTensor(landmarks_pre / (scale_of_axes)) - 1.0
-
     output = network(coordinate_tensor.to(device))
-
     delta = output.cpu().detach().numpy() * (scale_of_axes)
 
     return landmarks_pre + delta, delta
