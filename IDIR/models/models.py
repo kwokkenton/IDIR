@@ -14,9 +14,9 @@ import torch.nn as nn
 import torch.optim as optim
 import tqdm
 
-from IDIR.networks import networks
-from IDIR.objectives import ncc, regularizers
-from IDIR.utils import general
+from ..networks import networks
+from ..objectives import ncc, regularizers
+from ..utils import general
 
 DEFAULT_ARGS = {
             "mask": None,

@@ -1,5 +1,5 @@
-from models import models
-from utils import general
+from IDIR.models import models
+from IDIR.utils import general
 
 data_dir = "/Users/kenton/data/DIRLAB"
 out_dir = "/Users/kenton/data/DIRLAB/out"
